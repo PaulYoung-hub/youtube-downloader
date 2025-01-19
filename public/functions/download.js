@@ -1,138 +1,97 @@
-const { exec } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
+const fetch = require('node-fetch');
 
 exports.handler = async function(event, context) {
-  // Log pour le débogage
-  console.log('Function started');
-  
+  // Activer CORS
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json'
+  };
+
+  // Vérifier la méthode HTTP
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ error: 'Method Not Allowed' })
     };
   }
 
   try {
     const { url, type, quality } = JSON.parse(event.body);
-    console.log('Received parameters:', { url, type, quality });
-
+    
     if (!url) {
       throw new Error('URL is required');
     }
 
-    // Créer un ID unique pour ce téléchargement
-    const downloadId = uuidv4();
-    const tempDir = '/tmp/' + downloadId;
-    
-    // Créer le répertoire temporaire
-    fs.mkdirSync(tempDir, { recursive: true });
-    console.log('Created temp directory:', tempDir);
+    // Utiliser l'API rapidapi-youtube-dl
+    const options = {
+      method: 'GET',
+      headers: {
+        'X-RapidAPI-Key': '2b06f6414fmsh7d14c7bc0108a92p1c7d9djsnf3dabf8e3c07',
+        'X-RapidAPI-Host': 'youtube-video-download-info.p.rapidapi.com'
+      }
+    };
 
-    // Chemin vers yt-dlp
-    const ytDlpPath = path.join(process.env.LAMBDA_TASK_ROOT, 'bin', 'yt-dlp');
-    console.log('yt-dlp path:', ytDlpPath);
+    // Récupérer les informations de la vidéo
+    const apiUrl = `https://youtube-video-download-info.p.rapidapi.com/dl?id=${getVideoId(url)}`;
+    const response = await fetch(apiUrl, options);
+    const data = await response.json();
 
-    // Vérifier si yt-dlp existe
-    if (!fs.existsSync(ytDlpPath)) {
-      console.error('yt-dlp not found at:', ytDlpPath);
-      throw new Error('yt-dlp not found');
+    if (!response.ok) {
+      throw new Error('Failed to fetch video info');
     }
 
-    // Configurer la commande
-    let command = `${ytDlpPath} "${url}" -o "${path.join(tempDir, '%(title)s.%(ext)s')}" `;
-    
+    // Traiter les formats disponibles
+    let downloadUrl;
+    let filename;
+
     if (type === 'audio') {
-      command += '--extract-audio --audio-format mp3 ';
+      // Trouver le meilleur format audio
+      const audioFormat = data.link.find(f => f.type === 'mp3' || f.type === 'm4a');
+      if (!audioFormat) {
+        throw new Error('No audio format available');
+      }
+      downloadUrl = audioFormat.url;
+      filename = `${data.title}.${audioFormat.type}`;
     } else {
-      const qualityValue = quality === 'highest' 
-        ? 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' 
-        : `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${quality}][ext=mp4]/best[ext=mp4]`;
-      command += `-f "${qualityValue}" `;
+      // Trouver le format vidéo correspondant à la qualité demandée
+      const videoFormats = data.link.filter(f => f.type === 'mp4');
+      let selectedFormat;
+
+      if (quality === 'highest') {
+        selectedFormat = videoFormats.reduce((prev, current) => 
+          (prev.quality > current.quality) ? prev : current
+        );
+      } else {
+        selectedFormat = videoFormats.find(f => f.quality <= parseInt(quality)) ||
+                        videoFormats[0];
+      }
+
+      if (!selectedFormat) {
+        throw new Error('No suitable video format found');
+      }
+      downloadUrl = selectedFormat.url;
+      filename = `${data.title}.mp4`;
     }
 
-    console.log('Executing command:', command);
+    // Retourner l'URL de téléchargement
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        success: true,
+        downloadUrl,
+        filename,
+        title: data.title
+      })
+    };
 
-    return new Promise((resolve, reject) => {
-      exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
-        console.log('Command output:', stdout);
-        console.log('Command errors:', stderr);
-
-        if (error) {
-          console.error('Download error:', error);
-          resolve({
-            statusCode: 500,
-            headers: { 
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            },
-            body: JSON.stringify({
-              error: 'Download failed',
-              details: error.message,
-              stdout,
-              stderr
-            })
-          });
-          return;
-        }
-
-        try {
-          const files = fs.readdirSync(tempDir);
-          console.log('Files in temp directory:', files);
-
-          if (files.length === 0) {
-            throw new Error('No file was downloaded');
-          }
-
-          const downloadedFile = files[0];
-          const filePath = path.join(tempDir, downloadedFile);
-          const fileContent = fs.readFileSync(filePath);
-          
-          // Nettoyer
-          try {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          } catch (cleanupError) {
-            console.error('Cleanup error:', cleanupError);
-          }
-
-          resolve({
-            statusCode: 200,
-            headers: { 
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            },
-            body: JSON.stringify({
-              success: true,
-              filename: downloadedFile,
-              content: fileContent.toString('base64')
-            })
-          });
-        } catch (fileError) {
-          console.error('File handling error:', fileError);
-          resolve({
-            statusCode: 500,
-            headers: { 
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            },
-            body: JSON.stringify({
-              error: 'File processing failed',
-              details: fileError.message
-            })
-          });
-        }
-      });
-    });
   } catch (error) {
-    console.error('General error:', error);
+    console.error('Error:', error);
     return {
       statusCode: 500,
-      headers: { 
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
+      headers,
       body: JSON.stringify({
         error: 'Internal server error',
         details: error.message
@@ -140,3 +99,10 @@ exports.handler = async function(event, context) {
     };
   }
 };
+
+// Fonction pour extraire l'ID de la vidéo YouTube
+function getVideoId(url) {
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const match = url.match(regExp);
+  return match && match[2].length === 11 ? match[2] : null;
+}

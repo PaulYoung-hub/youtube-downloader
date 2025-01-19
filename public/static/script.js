@@ -1,45 +1,18 @@
-document.addEventListener('DOMContentLoaded', function() {
-    const urlInput = document.getElementById('url');
-    const typeSelect = document.getElementById('type');
-    const qualitySelect = document.getElementById('quality');
-    const qualityGroup = document.getElementById('qualityGroup');
-    const downloadBtn = document.getElementById('downloadBtn');
-    const progressContainer = document.getElementById('progressContainer');
-    const progressBar = document.getElementById('progressBar');
-    const status = document.getElementById('status');
-    const error = document.getElementById('error');
-    const success = document.getElementById('success');
-    const successText = document.getElementById('successText');
-    const downloadLink = document.getElementById('downloadLink');
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.querySelector('form');
+    const urlInput = document.querySelector('#url');
+    const typeSelect = document.querySelector('#type');
+    const qualitySelect = document.querySelector('#quality');
+    const downloadBtn = document.querySelector('#downloadBtn');
+    const message = document.querySelector('#message');
 
-    // Gérer l'affichage du sélecteur de qualité
-    typeSelect.addEventListener('change', function() {
-        qualityGroup.style.display = this.value === 'video' ? 'block' : 'none';
-    });
-
-    // Fonction pour réinitialiser l'interface
-    function resetInterface() {
-        progressContainer.style.display = 'none';
-        error.style.display = 'none';
-        success.style.display = 'none';
-        downloadLink.style.display = 'none';
-        progressBar.style.width = '0%';
-        downloadBtn.disabled = false;
-        document.body.classList.remove('loading');
-    }
-
-    // Fonction pour afficher une erreur
-    function showError(message) {
-        error.textContent = message;
-        error.style.display = 'block';
-        progressContainer.style.display = 'none';
-        downloadBtn.disabled = false;
-        document.body.classList.remove('loading');
-    }
-
-    // Fonction pour démarrer le téléchargement
-    async function startDownload() {
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
         try {
+            message.textContent = 'Téléchargement en cours...';
+            downloadBtn.disabled = true;
+
             const response = await fetch('/.netlify/functions/download', {
                 method: 'POST',
                 headers: {
@@ -48,62 +21,39 @@ document.addEventListener('DOMContentLoaded', function() {
                 body: JSON.stringify({
                     url: urlInput.value,
                     type: typeSelect.value,
-                    quality: typeSelect.value === 'video' ? qualitySelect.value.replace('p', '') : 'best'
+                    quality: qualitySelect.value
                 })
             });
 
+            const data = await response.json();
+
             if (!response.ok) {
-                const data = await response.json();
                 throw new Error(data.error || 'Erreur lors du téléchargement');
             }
 
-            const data = await response.json();
-            
-            // Créer un blob à partir du contenu base64
-            const binaryContent = atob(data.content);
-            const arrayBuffer = new ArrayBuffer(binaryContent.length);
-            const uint8Array = new Uint8Array(arrayBuffer);
-            
-            for (let i = 0; i < binaryContent.length; i++) {
-                uint8Array[i] = binaryContent.charCodeAt(i);
+            if (data.success && data.downloadUrl) {
+                // Créer un lien temporaire pour le téléchargement
+                const downloadLink = document.createElement('a');
+                downloadLink.href = data.downloadUrl;
+                downloadLink.download = data.filename || 'video.mp4';
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                
+                message.textContent = 'Téléchargement démarré !';
+            } else {
+                throw new Error('Format non disponible');
             }
-            
-            const blob = new Blob([arrayBuffer], { 
-                type: typeSelect.value === 'audio' ? 'audio/mp3' : 'video/mp4' 
-            });
-            
-            // Créer une URL pour le blob
-            const blobUrl = URL.createObjectURL(blob);
-            
-            // Mettre à jour l'interface
-            progressContainer.style.display = 'none';
-            success.style.display = 'block';
-            successText.textContent = 'Téléchargement terminé !';
-            downloadLink.href = blobUrl;
-            downloadLink.download = data.filename;
-            downloadLink.style.display = 'inline-block';
-            downloadBtn.disabled = false;
-            document.body.classList.remove('loading');
-
         } catch (error) {
-            showError(error.message);
+            console.error('Error:', error);
+            message.textContent = `Erreur: ${error.message}`;
+        } finally {
+            downloadBtn.disabled = false;
         }
-    }
+    });
 
-    // Gestionnaire d'événement pour le formulaire
-    downloadBtn.addEventListener('click', function(e) {
-        e.preventDefault();
-
-        if (!urlInput.value) {
-            showError('Veuillez entrer une URL YouTube valide');
-            return;
-        }
-
-        resetInterface();
-        downloadBtn.disabled = true;
-        document.body.classList.add('loading');
-        progressContainer.style.display = 'block';
-        status.textContent = 'Téléchargement en cours...';
-        startDownload();
+    // Gérer l'affichage du sélecteur de qualité
+    typeSelect.addEventListener('change', () => {
+        qualitySelect.style.display = typeSelect.value === 'video' ? 'block' : 'none';
     });
 });
