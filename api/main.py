@@ -46,12 +46,22 @@ async def download_video(request: DownloadRequest):
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.info(f"Dossier temporaire créé: {temp_dir}")
             
-            # Configuration de base de yt-dlp
+            # Configuration de base de yt-dlp avec des options anti-bot
             ydl_opts = {
                 'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 'quiet': False,
                 'no_warnings': False,
                 'extract_flat': False,
+                # Options pour contourner les restrictions
+                'cookiesfrombrowser': ('chrome',),  # Utilise les cookies de Chrome
+                'extractor_args': {'youtube': {'player_client': ['android']}},
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Sec-Fetch-Mode': 'navigate',
+                },
+                'socket_timeout': 30,
             }
 
             # Configuration spécifique selon le type
@@ -120,6 +130,11 @@ async def download_video(request: DownloadRequest):
 
             except Exception as e:
                 logger.error(f"Erreur lors du téléchargement: {str(e)}")
+                if "Sign in to confirm you're not a bot" in str(e):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Cette vidéo nécessite une authentification. Essayez une autre vidéo ou revenez plus tard."
+                    )
                 raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
 
     except HTTPException as he:
