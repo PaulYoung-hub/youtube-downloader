@@ -1,11 +1,12 @@
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 
 exports.handler = async function(event, context) {
-  // Vérifier la méthode HTTP
+  // Log pour le débogage
+  console.log('Function started');
+  
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
@@ -15,33 +16,40 @@ exports.handler = async function(event, context) {
   }
 
   try {
-    // Analyser le corps de la requête
     const { url, type, quality } = JSON.parse(event.body);
-    
-    // Vérifier les paramètres requis
+    console.log('Received parameters:', { url, type, quality });
+
     if (!url) {
       throw new Error('URL is required');
     }
 
     // Créer un ID unique pour ce téléchargement
     const downloadId = uuidv4();
-    const tempDir = path.join('/tmp', downloadId);
+    const tempDir = '/tmp/' + downloadId;
     
     // Créer le répertoire temporaire
     fs.mkdirSync(tempDir, { recursive: true });
+    console.log('Created temp directory:', tempDir);
 
-    // Configurer les options de yt-dlp
-    const ytDlpPath = path.join(__dirname, 'yt-dlp');
-    const outputTemplate = path.join(tempDir, '%(title)s.%(ext)s');
-    
-    // Construire la commande
-    let command = `${ytDlpPath} "${url}" -o "${outputTemplate}" `;
+    // Chemin vers yt-dlp
+    const ytDlpPath = path.join(process.env.LAMBDA_TASK_ROOT, 'bin', 'yt-dlp');
+    console.log('yt-dlp path:', ytDlpPath);
+
+    // Vérifier si yt-dlp existe
+    if (!fs.existsSync(ytDlpPath)) {
+      console.error('yt-dlp not found at:', ytDlpPath);
+      throw new Error('yt-dlp not found');
+    }
+
+    // Configurer la commande
+    let command = `${ytDlpPath} "${url}" -o "${path.join(tempDir, '%(title)s.%(ext)s')}" `;
     
     if (type === 'audio') {
       command += '--extract-audio --audio-format mp3 ';
     } else {
-      const qualityValue = quality === 'highest' ? 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' 
-                                               : `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${quality}][ext=mp4]/best[ext=mp4]`;
+      const qualityValue = quality === 'highest' 
+        ? 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' 
+        : `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${quality}][ext=mp4]/best[ext=mp4]`;
       command += `-f "${qualityValue}" `;
     }
 
@@ -49,27 +57,31 @@ exports.handler = async function(event, context) {
 
     return new Promise((resolve, reject) => {
       exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
-        console.log('stdout:', stdout);
-        console.log('stderr:', stderr);
-        
+        console.log('Command output:', stdout);
+        console.log('Command errors:', stderr);
+
         if (error) {
-          console.error('Error:', error);
+          console.error('Download error:', error);
           resolve({
             statusCode: 500,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            headers: { 
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            },
+            body: JSON.stringify({
               error: 'Download failed',
               details: error.message,
-              stdout: stdout,
-              stderr: stderr
+              stdout,
+              stderr
             })
           });
           return;
         }
 
         try {
-          // Lire le fichier téléchargé
           const files = fs.readdirSync(tempDir);
+          console.log('Files in temp directory:', files);
+
           if (files.length === 0) {
             throw new Error('No file was downloaded');
           }
@@ -85,7 +97,6 @@ exports.handler = async function(event, context) {
             console.error('Cleanup error:', cleanupError);
           }
 
-          // Renvoyer le contenu
           resolve({
             statusCode: 200,
             headers: { 
@@ -102,8 +113,11 @@ exports.handler = async function(event, context) {
           console.error('File handling error:', fileError);
           resolve({
             statusCode: 500,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            headers: { 
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            },
+            body: JSON.stringify({
               error: 'File processing failed',
               details: fileError.message
             })
@@ -111,13 +125,15 @@ exports.handler = async function(event, context) {
         }
       });
     });
-
   } catch (error) {
     console.error('General error:', error);
     return {
       statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
+      headers: { 
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      },
+      body: JSON.stringify({
         error: 'Internal server error',
         details: error.message
       })
