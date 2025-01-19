@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -25,7 +25,7 @@ class DownloadRequest(BaseModel):
     type: str
     quality: Optional[str] = "720"
 
-@app.post("/download")
+@app.post("/api/download")
 async def download_video(request: DownloadRequest):
     try:
         # Créer un répertoire temporaire
@@ -34,6 +34,8 @@ async def download_video(request: DownloadRequest):
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
             }
 
             if request.type == "audio":
@@ -88,6 +90,11 @@ async def download_video(request: DownloadRequest):
             status_code=500,
             content={"error": str(e)}
         )
+
+# Route racine pour vérifier que l'API fonctionne
+@app.get("/")
+async def root():
+    return {"status": "API is running"}
 
 if __name__ == "__main__":
     import uvicorn

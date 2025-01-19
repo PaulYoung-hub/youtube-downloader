@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
             message.textContent = 'Téléchargement en cours...';
             downloadBtn.disabled = true;
 
-            const response = await fetch('/download', {
+            const response = await fetch('/api/download', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
