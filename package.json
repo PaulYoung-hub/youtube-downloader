@@ -1,0 +1,15 @@
+{
+  "name": "youtube-downloader",
+  "version": "1.0.0",
+  "description": "YouTube Downloader with Netlify Functions",
+  "main": "index.js",
+  "scripts": {
+    "build": "netlify-lambda build netlify/functions"
+  },
+  "dependencies": {
+    "uuid": "^8.3.2"
+  },
+  "devDependencies": {
+    "netlify-lambda": "^2.0.15"
+  }
+}

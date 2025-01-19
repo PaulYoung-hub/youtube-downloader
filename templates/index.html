@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <h1>YouTube Downloader</h1>
+        
+        <div class="input-group">
+            <label for="url">URL de la vidéo</label>
+            <input type="text" id="url" placeholder="Collez l'URL YouTube ici" required>
+        </div>
+
+        <div class="input-group">
+            <label for="type">Type de téléchargement</label>
+            <select id="type" required>
+                <option value="video">Vidéo</option>
+                <option value="audio">Audio (MP3)</option>
+            </select>
+        </div>
+
+        <div class="input-group" id="qualityGroup">
+            <label for="quality">Qualité</label>
+            <select id="quality" required>
+                <option value="highest">Meilleure qualité</option>
+                <option value="1080p">1080p</option>
+                <option value="720p">720p</option>
+                <option value="480p">480p</option>
+                <option value="360p">360p</option>
+            </select>
+        </div>
+
+        <button id="downloadBtn">Télécharger</button>
+
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar">
+                <div class="progress" id="progressBar"></div>
+            </div>
+            <div class="status" id="status">Initialisation du téléchargement...</div>
+        </div>
+
+        <div class="error" id="error"></div>
+        <div class="success" id="success">
+            <span id="successText"></span>
+            <a href="#" id="downloadLink" style="display: none;">Télécharger le fichier</a>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
