@@ -1,7 +1,7 @@
 [build]
-  publish = "public"
-  functions = "netlify/functions"
-  command = "chmod +x netlify/functions/setup.sh && ./netlify/functions/setup.sh"
+  publish = "."
+  functions = "functions"
+  command = "chmod +x functions/setup.sh && ./functions/setup.sh"
 
 [functions]
   node_bundler = "esbuild"
