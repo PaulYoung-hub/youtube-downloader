@@ -6,8 +6,16 @@ import yt_dlp
 import os
 import tempfile
 from typing import Optional
-import asyncio
-import aiofiles
+import logging
+import sys
+
+# Configuration des logs
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -27,18 +35,28 @@ class DownloadRequest(BaseModel):
 
 @app.post("/api/download")
 async def download_video(request: DownloadRequest):
+    logger.info(f"Nouvelle requête de téléchargement: {request.dict()}")
+    
     try:
+        # Vérifier l'URL
+        if not request.url:
+            raise HTTPException(status_code=400, detail="URL is required")
+
         # Créer un répertoire temporaire
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Configuration de yt-dlp
+            logger.info(f"Dossier temporaire créé: {temp_dir}")
+            
+            # Configuration de base de yt-dlp
             ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                'quiet': True,
-                'no_warnings': True,
+                'quiet': False,
+                'no_warnings': False,
+                'extract_flat': False,
             }
 
+            # Configuration spécifique selon le type
             if request.type == "audio":
+                logger.info("Configuration pour l'audio")
                 ydl_opts.update({
                     'format': 'bestaudio/best',
                     'postprocessors': [{
@@ -48,53 +66,72 @@ async def download_video(request: DownloadRequest):
                     }],
                 })
             else:
-                # Configuration pour la vidéo
-                if request.quality != "highest":
-                    ydl_opts['format'] = f'bestvideo[height<={request.quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.quality}][ext=mp4]/best'
+                logger.info("Configuration pour la vidéo")
+                if request.quality == "highest":
+                    format_str = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                else:
+                    format_str = f'bestvideo[height<={request.quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.quality}][ext=mp4]/best'
+                ydl_opts['format'] = format_str
 
-            # Télécharger la vidéo
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(request.url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-                # Gérer l'extension pour l'audio
-                if request.type == "audio":
-                    filename = os.path.splitext(filename)[0] + '.mp3'
+            logger.info(f"Options yt-dlp: {ydl_opts}")
 
-                # Vérifier si le fichier existe
-                if not os.path.exists(filename):
-                    raise HTTPException(status_code=404, detail="File not found after download")
+            try:
+                # Télécharger la vidéo
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    logger.info("Début du téléchargement")
+                    info = ydl.extract_info(request.url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    logger.info(f"Fichier téléchargé: {filename}")
 
-                # Lire et retourner le fichier
-                async def iterfile():
-                    async with aiofiles.open(filename, 'rb') as f:
-                        while chunk := await f.read(8192):
-                            yield chunk
+                    # Gérer l'extension pour l'audio
+                    if request.type == "audio":
+                        base = os.path.splitext(filename)[0]
+                        filename = f"{base}.mp3"
+                        logger.info(f"Fichier audio converti: {filename}")
 
-                # Déterminer le type de contenu
-                content_type = 'audio/mpeg' if request.type == 'audio' else 'video/mp4'
-                
-                # Obtenir le nom du fichier final
-                final_filename = os.path.basename(filename)
+                    # Vérifier si le fichier existe
+                    if not os.path.exists(filename):
+                        raise HTTPException(status_code=404, detail="File not found after download")
 
-                return StreamingResponse(
-                    iterfile(),
-                    media_type=content_type,
-                    headers={
-                        'Content-Disposition': f'attachment; filename="{final_filename}"'
-                    }
-                )
+                    # Lire et retourner le fichier
+                    file_size = os.path.getsize(filename)
+                    logger.info(f"Taille du fichier: {file_size} bytes")
 
+                    def iterfile():
+                        with open(filename, 'rb') as f:
+                            while chunk := f.read(8192):
+                                yield chunk
+
+                    # Déterminer le type de contenu
+                    content_type = 'audio/mpeg' if request.type == 'audio' else 'video/mp4'
+                    
+                    # Obtenir le nom du fichier final
+                    final_filename = os.path.basename(filename)
+
+                    logger.info(f"Envoi du fichier: {final_filename}, type: {content_type}")
+                    return StreamingResponse(
+                        iterfile(),
+                        media_type=content_type,
+                        headers={
+                            'Content-Disposition': f'attachment; filename="{final_filename}"',
+                            'Content-Length': str(file_size)
+                        }
+                    )
+
+            except Exception as e:
+                logger.error(f"Erreur lors du téléchargement: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
+
+    except HTTPException as he:
+        logger.error(f"HTTPException: {he.detail}")
+        raise he
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        logger.error(f"Erreur générale: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Route racine pour vérifier que l'API fonctionne
-@app.get("/")
-async def root():
-    return {"status": "API is running"}
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     import uvicorn
