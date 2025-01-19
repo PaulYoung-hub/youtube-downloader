@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
             message.textContent = 'Téléchargement en cours...';
             downloadBtn.disabled = true;
 
-            const response = await fetch('/.netlify/functions/download', {
+            const response = await fetch('/download', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -25,25 +25,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 })
             });
 
-            const data = await response.json();
-
             if (!response.ok) {
-                throw new Error(data.error || 'Erreur lors du téléchargement');
+                const error = await response.json();
+                throw new Error(error.detail || 'Erreur lors du téléchargement');
             }
 
-            if (data.success && data.downloadUrl) {
-                // Créer un lien temporaire pour le téléchargement
-                const downloadLink = document.createElement('a');
-                downloadLink.href = data.downloadUrl;
-                downloadLink.download = data.filename || 'video.mp4';
-                document.body.appendChild(downloadLink);
-                downloadLink.click();
-                document.body.removeChild(downloadLink);
-                
-                message.textContent = 'Téléchargement démarré !';
-            } else {
-                throw new Error('Format non disponible');
-            }
+            // Créer un blob à partir de la réponse
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = response.headers.get('content-disposition')
+                ? response.headers.get('content-disposition').split('filename=')[1].replace(/"/g, '')
+                : 'video.mp4';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+            message.textContent = 'Téléchargement terminé !';
         } catch (error) {
             console.error('Error:', error);
             message.textContent = `Erreur: ${error.message}`;
