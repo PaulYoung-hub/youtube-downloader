@@ -8,8 +8,9 @@ import tempfile
 from typing import Optional
 import logging
 import sys
-import random
-import json
+import requests
+import re
+from urllib.parse import parse_qs, urlparse
 
 # Configuration des logs
 logging.basicConfig(
@@ -35,55 +36,109 @@ class DownloadRequest(BaseModel):
     type: str
     quality: Optional[str] = "720"
 
-class YTDLLogger:
-    def debug(self, msg):
-        if msg.startswith('[debug] '):
-            logger.debug(msg)
-    def info(self, msg):
-        logger.info(msg)
-    def warning(self, msg):
-        logger.warning(msg)
-    def error(self, msg):
-        logger.error(msg)
+def get_video_id(url: str) -> str:
+    """Extraire l'ID de la vidéo YouTube de l'URL."""
+    if match := re.search(r'(?:v=|\/)([\w-]{11})', url):
+        return match.group(1)
+    parsed = urlparse(url)
+    if parsed.path.startswith('/watch'):
+        return parse_qs(parsed.query).get('v', [None])[0]
+    return url
 
-def get_video_info(url: str) -> dict:
+def download_with_ytdlp(url: str, output_path: str, type_: str, quality: str):
+    """Télécharger avec yt-dlp avec une configuration optimisée."""
     ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' if type_ == 'video' else 'bestaudio/best',
+        'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': True,
-        'logger': YTDLLogger(),
+        'extract_flat': False,
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'no_color': True,
+        'noprogress': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'DNT': '1',
+        }
     }
-    
+
+    if type_ == "audio":
+        ydl_opts.update({
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        })
+    elif quality != "highest":
+        ydl_opts['format'] = f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality}][ext=mp4]/best'
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            return ydl.extract_info(url, download=False)
+            ydl.download([url])
+            return True
         except Exception as e:
-            logger.error(f"Erreur lors de l'extraction des informations: {str(e)}")
-            raise
+            logger.error(f"Erreur yt-dlp: {str(e)}")
+            return False
 
-def get_best_format(formats: list, type_: str, quality: str) -> str:
-    if type_ == "audio":
-        audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-        if audio_formats:
-            return max(audio_formats, key=lambda x: int(x.get('abr', 0)))['format_id']
-        return 'bestaudio'
-    
-    if quality == "highest":
-        return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-    
-    target_height = int(quality)
-    video_formats = [
-        f for f in formats 
-        if f.get('height', 0) <= target_height 
-        and f.get('ext', '') == 'mp4'
-        and f.get('vcodec') != 'none'
-    ]
-    
-    if video_formats:
-        best_video = max(video_formats, key=lambda x: x.get('height', 0))
-        return f"{best_video['format_id']}+bestaudio[ext=m4a]/best[ext=mp4]/best"
-    
-    return f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality}][ext=mp4]/best'
+def download_with_alternative(url: str, output_path: str, type_: str, quality: str):
+    """Méthode alternative de téléchargement."""
+    try:
+        video_id = get_video_id(url)
+        if not video_id:
+            raise ValueError("ID de vidéo invalide")
+
+        # Utiliser une API alternative pour obtenir les liens directs
+        api_url = f"https://api.vevioz.com/@api/json/mp4/{video_id}"
+        response = requests.get(api_url)
+        if response.status_code != 200:
+            raise Exception("Impossible d'obtenir les informations de la vidéo")
+
+        data = response.json()
+        if not data or 'links' not in data:
+            raise Exception("Format de réponse invalide")
+
+        # Choisir le meilleur lien selon la qualité demandée
+        available_links = data['links']
+        selected_link = None
+        
+        if type_ == "audio":
+            for link in available_links:
+                if link.get('type') == 'mp3':
+                    selected_link = link.get('url')
+                    break
+        else:
+            target_quality = int(quality) if quality != "highest" else 1080
+            best_quality = 0
+            for link in available_links:
+                if link.get('type') == 'mp4':
+                    q = int(link.get('quality', '0').replace('p', ''))
+                    if q <= target_quality and q > best_quality:
+                        best_quality = q
+                        selected_link = link.get('url')
+
+        if not selected_link:
+            raise Exception("Aucun lien disponible pour la qualité demandée")
+
+        # Télécharger le fichier
+        response = requests.get(selected_link, stream=True)
+        if response.status_code != 200:
+            raise Exception("Erreur lors du téléchargement")
+
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Erreur alternative: {str(e)}")
+        return False
 
 @app.post("/api/download")
 async def download_video(request: DownloadRequest):
@@ -93,110 +148,47 @@ async def download_video(request: DownloadRequest):
         if not request.url:
             raise HTTPException(status_code=400, detail="URL is required")
 
-        # Extraire les informations de la vidéo d'abord
-        try:
-            video_info = get_video_info(request.url)
-            logger.info(f"Informations vidéo extraites: {video_info.get('title')}")
-        except Exception as e:
-            if "Sign in to confirm you're not a bot" in str(e):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Définir le nom du fichier de sortie
+            ext = "mp3" if request.type == "audio" else "mp4"
+            output_path = os.path.join(temp_dir, f"video.{ext}")
+            
+            # Essayer d'abord avec yt-dlp
+            success = download_with_ytdlp(request.url, output_path, request.type, request.quality)
+            
+            # Si yt-dlp échoue, essayer la méthode alternative
+            if not success:
+                logger.info("yt-dlp a échoué, essai de la méthode alternative")
+                success = download_with_alternative(request.url, output_path, request.type, request.quality)
+
+            if not success:
                 raise HTTPException(
                     status_code=400,
-                    detail="Cette vidéo nécessite une vérification. Essayez une autre vidéo ou revenez plus tard."
+                    detail="Impossible de télécharger la vidéo. Essayez une autre vidéo ou réessayez plus tard."
                 )
-            raise HTTPException(status_code=400, detail=str(e))
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            logger.info(f"Dossier temporaire créé: {temp_dir}")
+            if not os.path.exists(output_path):
+                raise HTTPException(status_code=404, detail="Le fichier n'a pas été créé")
+
+            file_size = os.path.getsize(output_path)
+            if file_size == 0:
+                raise HTTPException(status_code=400, detail="Le fichier téléchargé est vide")
+
+            def iterfile():
+                with open(output_path, 'rb') as f:
+                    while chunk := f.read(8192):
+                        yield chunk
+
+            content_type = 'audio/mpeg' if request.type == 'audio' else 'video/mp4'
             
-            ydl_opts = {
-                'format': get_best_format(video_info.get('formats', []), request.type, request.quality),
-                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                'logger': YTDLLogger(),
-                'progress_hooks': [lambda d: logger.info(f"Progression: {d.get('status')} - {d.get('_percent_str', 'N/A')}")],
-                'quiet': False,
-                'no_warnings': True,
-                'noplaylist': True,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'DNT': '1',
-                },
-                'socket_timeout': 30,
-                'retries': 10,
-            }
-
-            if request.type == "audio":
-                ydl_opts.update({
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                })
-
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    logger.info("Début du téléchargement")
-                    ydl.download([request.url])
-                    
-                    # Trouver le fichier téléchargé
-                    files = os.listdir(temp_dir)
-                    if not files:
-                        raise HTTPException(status_code=404, detail="Aucun fichier n'a été téléchargé")
-                    
-                    filename = os.path.join(temp_dir, files[0])
-                    logger.info(f"Fichier téléchargé: {filename}")
-
-                    if not os.path.exists(filename):
-                        raise HTTPException(status_code=404, detail="Le fichier n'a pas été trouvé après le téléchargement")
-
-                    file_size = os.path.getsize(filename)
-                    logger.info(f"Taille du fichier: {file_size} bytes")
-
-                    def iterfile():
-                        with open(filename, 'rb') as f:
-                            while chunk := f.read(8192):
-                                yield chunk
-
-                    content_type = 'audio/mpeg' if request.type == 'audio' else 'video/mp4'
-                    final_filename = os.path.basename(filename)
-
-                    logger.info(f"Envoi du fichier: {final_filename}, type: {content_type}")
-                    return StreamingResponse(
-                        iterfile(),
-                        media_type=content_type,
-                        headers={
-                            'Content-Disposition': f'attachment; filename="{final_filename}"',
-                            'Content-Length': str(file_size)
-                        }
-                    )
-
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Erreur lors du téléchargement: {error_msg}")
-                
-                if "Sign in to confirm you're not a bot" in error_msg:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="YouTube a détecté une activité inhabituelle. Essayez une autre vidéo ou attendez quelques minutes."
-                    )
-                elif "Video unavailable" in error_msg:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cette vidéo n'est pas disponible. Vérifiez l'URL et réessayez."
-                    )
-                elif "Private video" in error_msg:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cette vidéo est privée et ne peut pas être téléchargée."
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Erreur lors du téléchargement: {error_msg}"
-                    )
+            return StreamingResponse(
+                iterfile(),
+                media_type=content_type,
+                headers={
+                    'Content-Disposition': f'attachment; filename="video.{ext}"',
+                    'Content-Length': str(file_size)
+                }
+            )
 
     except HTTPException as he:
         raise he
@@ -209,7 +201,7 @@ async def download_video(request: DownloadRequest):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "version": "2.0.0"}
+    return {"status": "healthy", "version": "2.1.0"}
 
 if __name__ == "__main__":
     import uvicorn
